@@ -1,0 +1,7 @@
+/models
+/.venv
+/.ruff_cache
+/temp
+/__pycache__
+/nanogpt
+/docs
