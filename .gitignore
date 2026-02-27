@@ -5,3 +5,6 @@
 /__pycache__
 /nanogpt
 /docs
+
+/tests/__pycache__
+/tests/.pytest_cache
