@@ -68,13 +68,16 @@ class Transformer(torch.nn.Module):
         self.lm_head = torch.nn.Linear(d_model, vocab_size, bias=False)
         self.embedding_layer.token_embedding.weight = self.lm_head.weight  # token embedding weights are tied to the final linear layer weights (reduces parameters significantly)
 
+        self._init()
+
+    def _init(self):
         self.apply(self._init_weights)
 
         for pn, p in self.named_parameters():
             if pn.endswith("Wo.weight"):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layers))
-
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
         self.to(device)
+
 
     def _init_weights(self, module):
         """initialise all weights with Normal(0, 0.02), zeros for biases"""
@@ -85,40 +88,61 @@ class Transformer(torch.nn.Module):
         elif isinstance(module, torch.nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, x):
+    def forward(self, x, targets=None):
         x = self.embedding_layer(x)
         for block in self.blocks:
             x = block(x)
         x = self.final_layer_norm(x)
         logits = self.lm_head(x)
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits[:, :-1, :].reshape(-1, logits.size(-1)),
+                targets[:, 1:].reshape(-1),
+            )
+            return logits, loss
         return logits
 
-    # @torch.no_grad()
-    # def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-    #     """
-    #     Autoregressive token generation.
-    #     idx: LongTensor of shape (B, T) — starting context token indices
-    #     Returns LongTensor of shape (B, T + max_new_tokens)
-    #     """
-    #     self.eval()
-    #     for _ in range(max_new_tokens):
-    #         # crop context to block_size if sequence has grown too long
-    #         idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        """
+        Autoregressive token generation.
+        idx: LongTensor of shape (B, T) — starting context token indices
+        Returns LongTensor of shape (B, T + max_new_tokens)
+        """
+        self.eval()
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
+            logits = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+        return idx
 
-    #         logits, _ = self(idx_cond)  # (B, 1, vocab) at inference
-    #         logits = logits[:, -1, :]  # (B, vocab)
-
-    #         logits = logits / temperature
-
-    #         if top_k is not None:
-    #             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-    #             logits[logits < v[:, [-1]]] = float("-inf")
-
-    #         probs = F.softmax(logits, dim=-1)
-    #         idx_next = torch.multinomial(probs, num_samples=1)  # (B, 1)
-    #         idx = torch.cat((idx, idx_next), dim=1)
-
-    #     return idx
+    @torch.no_grad()
+    def generate_beam(self, idx, max_new_tokens, beam_width=3):
+        """
+        Beam search generation. idx: (1, T). Returns (1, T + max_new_tokens).
+        """
+        self.eval()
+        beams = [(idx[0].clone(), 0.0)]  # (seq, log_prob)
+        for _ in range(max_new_tokens):
+            candidates = []
+            for seq, score in beams:
+                ctx = seq.unsqueeze(0)
+                ctx = ctx if ctx.size(1) <= block_size else ctx[:, -block_size:]
+                logits = self(ctx)
+                log_probs = F.log_softmax(logits[:, -1, :], dim=-1)
+                top_logprob, top_idx = log_probs[0].topk(beam_width)
+                for i in range(beam_width):
+                    new_seq = torch.cat([seq, top_idx[i : i + 1]])
+                    candidates.append((new_seq, score + top_logprob[i].item()))
+            candidates.sort(key=lambda x: -x[1])
+            beams = candidates[:beam_width]
+        return beams[0][0].unsqueeze(0)
 
     # def configure_optimizers(self, weight_decay, learning_rate, betas=(0.9, 0.95)):
     #     # 2D params (weight matrices, embeddings) get weight decay
