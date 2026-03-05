@@ -1,5 +1,5 @@
 # smolgpt
-a small geneterative pre-trained transformer model implemented in pytorch.
+a small generative pre-trained transformer model implemented in pytorch.
 ![smolgpt](image.png)
 ```python
 class Transformer(torch.nn.Module):
