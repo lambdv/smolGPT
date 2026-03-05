@@ -235,8 +235,6 @@ class LayerNorm(torch.nn.Module):
     def forward(self, x):
         return F.layer_norm(x, (x.shape[-1],), self.weight, self.bias, self.eps)
 
-
-#
 def MLP(d_model=embed_dim, dropout=0.1):
     return torch.nn.Sequential(
         torch.nn.Linear(d_model, d_model * 4, bias=False),  # eg: 768 -> 3072
