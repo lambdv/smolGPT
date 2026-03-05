@@ -1,3 +1,3 @@
-import nn
+import model
 
-nn.TransformerBlock()
+model.TransformerBlock()

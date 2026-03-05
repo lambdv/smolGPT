@@ -4,11 +4,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-import nn
+
+import model
 
 prints = True
-v = nn.Vectorizer()
-t = nn.TransformerBlock()
+v = model.Vectorizer()
+t = model.TransformerBlock()
 
 
 @pytest.mark.parametrize(

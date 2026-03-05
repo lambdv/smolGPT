@@ -1,11 +1,6 @@
 import logging
 import math
 
-# v = Vectorizer()
-# x = v.to_vec("hi")
-# # print(x.shape)
-# t = TransformerBlock()
-# t._self_attention(x)
 import torch
 import torch.nn
 import torch.nn.functional as F
@@ -36,16 +31,23 @@ class EmbeddingLayer(torch.nn.Module):
         self.dropout = torch.nn.Dropout(dropout)
 
     def forward(self, x):
+        """accepts batched token ids and returns token embeddings"""
         batch_size, seq_len = x.shape
-        assert seq_len <= self.block_size, f"seq_len {seq_len} exceeds block_size {self.block_size}"
+        assert seq_len <= self.block_size, (
+            f"seq_len {seq_len} exceeds block_size {self.block_size}"
+        )
 
-        positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, seq_len)
-        
+        positions = (
+            torch.arange(seq_len, device=x.device)
+            .unsqueeze(0)
+            .expand(batch_size, seq_len)
+        )
+
         token_embeddings = self.token_embedding(x)
         position_embeddings = self.position_embedding(positions)
-        
+
         x = self.dropout(token_embeddings + position_embeddings)
-        
+
         return x
 
 
@@ -53,17 +55,35 @@ class Transformer(torch.nn.Module):
     def __init__(self, d_model=embed_dim, n_heads=12, dropout=0.1, n_layers=12):
         super().__init__()
 
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        self.n_layers = n_layers
 
         self.embedding_layer = EmbeddingLayer(vocab_size, d_model, dropout, block_size)
+        self.blocks = torch.nn.ModuleList()
 
-        self.blocks = torch.nn.ModuleList(
-            [TransformerBlock(d_model, n_heads, dropout) for _ in range(n_layers)]
-        )
+        for _ in range(n_layers):
+            self.blocks.append(TransformerBlock(d_model, n_heads, dropout))
+
         self.final_layer_norm = LayerNorm(d_model, True)
         self.lm_head = torch.nn.Linear(d_model, vocab_size, bias=False)
-        self.embedding_layer.token_embedding.weight = self.lm_head.weight # token embedding weights are tied to the final linear layer weights (reduces parameters significantly)
+        self.embedding_layer.token_embedding.weight = self.lm_head.weight  # token embedding weights are tied to the final linear layer weights (reduces parameters significantly)
+
+        self.apply(self._init_weights)
+
+        for pn, p in self.named_parameters():
+            if pn.endswith("Wo.weight"):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layers))
+
         self.to(device)
+
+    def _init_weights(self, module):
+        """initialise all weights with Normal(0, 0.02), zeros for biases"""
+        if isinstance(module, torch.nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, torch.nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, x):
         x = self.embedding_layer(x)
@@ -73,9 +93,58 @@ class Transformer(torch.nn.Module):
         logits = self.lm_head(x)
         return logits
 
-    def predict(self, text):
-        logits = self.forward(text)
-        return logits.argmax(dim=-1)
+    # @torch.no_grad()
+    # def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    #     """
+    #     Autoregressive token generation.
+    #     idx: LongTensor of shape (B, T) — starting context token indices
+    #     Returns LongTensor of shape (B, T + max_new_tokens)
+    #     """
+    #     self.eval()
+    #     for _ in range(max_new_tokens):
+    #         # crop context to block_size if sequence has grown too long
+    #         idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
+
+    #         logits, _ = self(idx_cond)  # (B, 1, vocab) at inference
+    #         logits = logits[:, -1, :]  # (B, vocab)
+
+    #         logits = logits / temperature
+
+    #         if top_k is not None:
+    #             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+    #             logits[logits < v[:, [-1]]] = float("-inf")
+
+    #         probs = F.softmax(logits, dim=-1)
+    #         idx_next = torch.multinomial(probs, num_samples=1)  # (B, 1)
+    #         idx = torch.cat((idx, idx_next), dim=1)
+
+    #     return idx
+
+    # def configure_optimizers(self, weight_decay, learning_rate, betas=(0.9, 0.95)):
+    #     # 2D params (weight matrices, embeddings) get weight decay
+    #     # 1D params (biases, LayerNorm scale/shift) do not
+    #     decay_params = [
+    #         p for n, p in self.named_parameters() if p.requires_grad and p.dim() >= 2
+    #     ]
+    #     nodecay_params = [
+    #         p for n, p in self.named_parameters() if p.requires_grad and p.dim() < 2
+    #     ]
+    #     optim_groups = [
+    #         {"params": decay_params, "weight_decay": weight_decay},
+    #         {"params": nodecay_params, "weight_decay": 0.0},
+    #     ]
+    #     # use fused AdamW on CUDA if available (faster kernel)
+    #     use_fused = (
+    #         "fused" in inspect.signature(torch.optim.AdamW).parameters
+    #         and device.type == "cuda"
+    #     )
+    #     optimizer = torch.optim.AdamW(
+    #         optim_groups,
+    #         lr=learning_rate,
+    #         betas=betas,
+    #         **(dict(fused=True) if use_fused else {}),
+    #     )
+    #     return optimizer
 
 
 class Vectorizer:
